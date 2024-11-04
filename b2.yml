@@ -83,9 +83,6 @@ services:
       - --metrics.addr=0.0.0.0
       - --metrics.port=6060
       - --metrics.expensive
-      # Others
-      - --pprof
-      - --pprof.addr=0.0.0.0
     labels:
       - traefik.enable=true
       - traefik.http.routers.${RPC_HOST:-b2}.service=${RPC_HOST:-b2}
