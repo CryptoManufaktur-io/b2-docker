@@ -363,8 +363,6 @@ update() {
     fi
 
     if [ -z "${ETHDSECUNDO-}" ]; then
-        # Do not track changes to ext-network.yml
-        ${__as_owner} git update-index --assume-unchanged ext-network.yml
         ${__as_owner} git config pull.rebase false
         ${__as_owner} git pull
         # BASH_SOURCE so newer code gets to do the update. Use an ENV var
@@ -547,6 +545,14 @@ terminate() {
 }
 
 
+__prep_conffiles() {
+# Create ext-network.yml if it doesn't exist
+  if [ ! -f "ext-network.yml" ]; then
+    ${__as_owner} cp ext-network.yml.sample ext-network.yml
+  fi
+}
+
+
 set_value_in_env() {
     # Assumes that "var" has been set to the name of the variable to be changed
     if [ "${!var+x}" ]; then
@@ -675,6 +681,7 @@ __params=$*
 
 determine_distro
 handle_root
+__prep_conffiles
 
 if [ "$__command" = "install" ]; then
     $__command "$@"
