@@ -1,0 +1,180 @@
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: 100m
+      max-file: "3"
+      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
+
+services:
+  op-geth-init:
+    restart: "no"
+    build:
+      context: ./init
+      dockerfile: Dockerfile
+    image: init:b2
+    pull_policy: never
+    environment:
+      - SNAPSHOT=${SNAPSHOT:-}
+    volumes:
+      - opgeth-data:/var/lib/op-geth
+      - jwtsecret:/var/lib/op-geth/ee-secret
+      - /etc/localtime:/etc/localtime:ro
+
+  op-geth:
+    restart: "unless-stopped"
+    build:
+      context: ./op-geth
+      dockerfile: Dockerfile.binary
+      args:
+        - DOCKER_TAG=${OPGETH_DOCKER_TAG}
+    image: op-geth:b2
+    pull_policy: never
+    stop_grace_period: 5m
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - SNAPSHOT=${SNAPSHOT:-}
+      - EL_EXTRAS=${EL_EXTRAS:-}
+    volumes:
+      - opgeth-data:/var/lib/op-geth
+      - jwtsecret:/var/lib/op-geth/ee-secret
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - ${OPGETH_P2P_PORT:-30300}:${OPGETH_P2P_PORT:-30300}/tcp
+      - ${OPGETH_P2P_PORT:-30300}:${OPGETH_P2P_PORT:-30300}/udp
+    networks:
+      default:
+        aliases:
+          - b2-geth # This allows multiple Optimism Docker stacks all connected to the same central traefik
+    depends_on:
+      op-geth-init:
+        condition: service_completed_successfully
+    <<: *logging
+    entrypoint:
+      - docker-entrypoint.sh
+      - geth
+      - --datadir=/var/lib/op-geth
+      - --syncmode=full
+      - --snapshot=false
+      - --rollup.sequencerhttp=${SEQUENCER}
+      # CL Engine API
+      - --authrpc.addr=0.0.0.0
+      - --authrpc.port=8551
+      - --authrpc.vhosts=*
+      - --authrpc.jwtsecret=/var/lib/op-geth/ee-secret/jwtsecret
+      # HTTP/RPC
+      - --http
+      - --http.addr=0.0.0.0
+      - --http.port=${RPC_PORT:-8545} 
+      - --http.vhosts=*
+      - --http.api=eth,web3,net
+      - --http.corsdomain=*
+      # Websocket
+      - --ws
+      - --ws.addr=0.0.0.0
+      - --ws.port=${WS_PORT:-8546}
+      - --ws.origins=*
+      - --ws.api=eth,web3,net
+      # P2P
+      - --port=$OPGETH_P2P_PORT
+      - --bootnodes=${OPGETH_BOOTNODES}
+      # Metrics
+      - --metrics
+      - --metrics.addr=0.0.0.0
+      - --metrics.port=6060
+      - --metrics.expensive
+      # Others
+      - --pprof
+      - --pprof.addr=0.0.0.0
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.${RPC_HOST:-b2}.service=${RPC_HOST:-b2}
+      - traefik.http.routers.${RPC_HOST:-b2}.entrypoints=websecure
+      - traefik.http.routers.${RPC_HOST:-b2}.rule=Host(`${RPC_HOST:-b2}.${DOMAIN}`)
+      - traefik.http.routers.${RPC_HOST:-b2}.tls.certresolver=letsencrypt
+      - traefik.http.routers.${RPC_HOST:-b2}lb.service=${RPC_HOST:-b2}
+      - traefik.http.routers.${RPC_HOST:-b2}lb.entrypoints=websecure
+      - traefik.http.routers.${RPC_HOST:-b2}lb.rule=Host(`${RPC_LB:-b2-lb}.${DOMAIN}`)
+      - traefik.http.routers.${RPC_HOST:-b2}lb.tls.certresolver=letsencrypt
+      - traefik.http.services.${RPC_HOST:-b2}.loadbalancer.server.port=${RPC_PORT:-8545}
+      - traefik.http.routers.${WS_HOST:-b2ws}.service=${WS_HOST:-b2ws}
+      - traefik.http.routers.${WS_HOST:-b2ws}.entrypoints=websecure
+      - traefik.http.routers.${WS_HOST:-b2ws}.rule=Host(`${WS_HOST:-b2ws}.${DOMAIN}`)
+      - traefik.http.routers.${WS_HOST:-b2ws}.tls.certresolver=letsencrypt
+      - traefik.http.routers.${WS_HOST:-b2ws}lb.service=${WS_HOST:-b2ws}
+      - traefik.http.routers.${WS_HOST:-b2ws}lb.entrypoints=websecure
+      - traefik.http.routers.${WS_HOST:-b2ws}lb.rule=Host(`${WS_LB:-b2ws-lb}.${DOMAIN}`)
+      - traefik.http.routers.${WS_HOST:-b2ws}lb.tls.certresolver=letsencrypt
+      - traefik.http.services.${WS_HOST:-b2ws}.loadbalancer.server.port=${WS_PORT:-8546}
+      - metrics.scrape=true
+      - metrics.path=/debug/metrics/prometheus
+      - metrics.port=6060
+      - metrics.network=b2
+
+  op-node:
+    restart: "unless-stopped"
+    build:
+      context: ./op-node
+      dockerfile: Dockerfile.binary
+      args:
+        - DOCKER_TAG=${OPNODE_DOCKER_TAG}
+    image: op-node:b2
+    pull_policy: never
+    stop_grace_period: 1m
+    stop_signal: SIGHUP
+    environment:
+      - CL_EXTRAS=${CL_EXTRAS}
+    volumes:
+      - jwtsecret:/var/lib/op-node/ee-secret
+      - opnode-data:/var/lib/op-node
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - ${OPNODE_P2P_PORT:-9003}:${OPNODE_P2P_PORT:-9003}/tcp
+      - ${OPNODE_P2P_PORT:-9003}:${OPNODE_P2P_PORT:-9003}/udp
+    <<: *logging
+    entrypoint:
+      - docker-entrypoint.sh
+      - op-node
+      - --log.level=${LOG_LEVEL}
+      - --l1=${L1_RPC}
+      - --l1.rpckind=${L1_RPC_KIND:-standard}
+      - --l1.trustrpc=true
+      - --l1.beacon
+      - ${L1_BEACON}
+      - --syncmode
+      - execution-layer
+      - --rollup.halt
+      - major
+      - --rpc.addr=0.0.0.0
+      - --rpc.port=${OPNODE_RPC_PORT:-9545}
+      - --l2=http://b2-geth:8551
+      - --l2.jwt-secret=/var/lib/op-node/ee-secret/jwtsecret
+      - --rollup.config=/var/lib/op-node/config/rollup.json
+      - --verifier.l1-confs=10
+      - --sequencer.l1-confs=10
+      - --p2p.listen.tcp=${OPNODE_P2P_PORT:-9003}
+      - --p2p.static=${OPNODE_STATIC_PEERS:-}
+      - --p2p.discovery.path=/var/lib/op-node/opnode_discovery_db
+      - --p2p.peerstore.path=/var/lib/op-node/opnode_peerstore_db
+      - --p2p.priv.path=/var/lib/op-node/opnode_p2p_priv.txt
+      - --metrics.enabled
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.${OPNODE_HOST:-opnode}.service=${OPNODE_HOST:-opnode}
+      - traefik.http.routers.${OPNODE_HOST:-opnode}.entrypoints=websecure
+      - traefik.http.routers.${OPNODE_HOST:-opnode}.rule=Host(`${OPNODE_HOST:-opnode}.${DOMAIN}`)
+      - traefik.http.routers.${OPNODE_HOST:-opnode}.tls.certresolver=letsencrypt
+      - traefik.http.routers.${OPNODE_HOST:-opnode}lb.service=${OPNODE_HOST:-opnode}
+      - traefik.http.routers.${OPNODE_HOST:-opnode}lb.entrypoints=websecure
+      - traefik.http.routers.${OPNODE_HOST:-opnode}lb.rule=Host(`${OPNODE_LB:-opnode-lb}.${DOMAIN}`)
+      - traefik.http.routers.${OPNODE_HOST:-opnode}lb.tls.certresolver=letsencrypt
+      - traefik.http.services.${OPNODE_HOST:-opnode}.loadbalancer.server.port=${OPNODE_RPC_PORT:-9545}
+      - metrics.scrape=true
+      - metrics.path=/metrics
+      - metrics.port=7300
+      - metrics.network=b2
+
+volumes:
+  opgeth-data:
+  opnode-data:
+  jwtsecret:
