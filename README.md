@@ -1,3 +1,7 @@
+# Archived repo
+
+Please use [Optimism Docker](https://github.com/CryptoManufaktur-io/optimism-docker) for B^2 RPC nodes
+
 # Overview
 
 Docker Compose for B^2 rollup
